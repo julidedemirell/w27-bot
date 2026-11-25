@@ -1,0 +1,71 @@
+name: W27 watcher
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # every 10 min; each run polls for ~9 min
+  workflow_dispatch:
+    inputs:
+      test_telegram:
+        description: "Only send a Telegram test message"
+        type: boolean
+        default: false
+
+concurrency:
+  group: w27-watcher
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # to save state/seen.json back to the repo
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Telegram test
+        if: ${{ inputs.test_telegram }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python w27_bot.py --test-telegram
+
+      - name: Watch
+        if: ${{ !inputs.test_telegram }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          W27_TYPES: ${{ vars.W27_TYPES }}
+          W27_EXCLUDE_TYPES: ${{ vars.W27_EXCLUDE_TYPES }}
+          W27_MAX_RENT: ${{ vars.W27_MAX_RENT }}
+          W27_EARLIEST: ${{ vars.W27_EARLIEST }}
+          W27_LATEST: ${{ vars.W27_LATEST }}
+          RUN_MINUTES: "9"
+          POLL_SECONDS: "90"
+        run: python w27_bot.py
+
+      - name: Save state
+        if: ${{ always() && !inputs.test_telegram }}
+        run: |
+          git config user.name  "w27-bot"
+          git config user.email "w27-bot@users.noreply.github.com"
+          mkdir -p state && touch state/seen.json
+          git add state/seen.json
+          git diff --cached --quiet || (git commit -m "update seen apartments" && git push)
